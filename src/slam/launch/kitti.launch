@@ -1,0 +1,152 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- update after merging devel -->
+  <!-- arguments -->
+  <param name="use_sim_time" value="true" />
+  <arg name="rviz" default="true" />
+  <arg name="nodelet_manager" default="velodyne_nodelet_manager" />
+  <arg name="enable_floor_detection" default="false" />
+  <arg name="enable_gps" default="false" />
+  <arg name="enable_imu_acc" default="false" />
+  <arg name="enable_imu_ori" default="false" />
+  <arg name="calib_file" default="/home/jack/test_ws/calib04-12.txt" />
+  <arg name="output_path" default="/home/jack/test_ws/result" />
+  <arg name="odom_file" value="/home/jack/test_ws/result/odom.txt" />
+
+
+  <node pkg="tf" type="static_transform_publisher" name="lidar2base_publisher" args="0 0 0 0 0 0 base_link velodyne 10" />
+  <node pkg="tf" type="static_transform_publisher" name="camera_init2odom_publisher" args="0 0 0 0 0 0 odom camera_init 10" />
+
+  <!-- in case you use velodyne_driver, comment out the following line -->
+  <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager)" args="manager" output="screen"/>
+  
+  <!-- prefiltering_nodelet -->
+  <node pkg="nodelet" type="nodelet" name="prefiltering_nodelet" args="load lidar_odometry/PrefilteringNodelet $(arg nodelet_manager)">
+  	<!-- in case base_link_frame is blank, mapping will be performed in the lidar frame -->
+    <param name="base_link_frame" value="base_link" />
+    <!-- distance filter --> <!--設定濾波距離-->
+    <param name="use_distance_filter" value="true" />  
+    <param name="distance_near_thresh" value="0.5" />
+    <param name="distance_far_thresh" value="100.0" />
+    <!--降採樣方法,VOXELGRID重心 or，APPROX_VOXELGRID幾何中心 -->
+    <param name="downsample_method" value="VOXELGRID" /> 
+    <param name="downsample_resolution" value="0.1" />  <!--分辨率為0.1米 -->
+    <!--外點移除方法-->
+    <param name="outlier_removal_method" value="RADIUS" />    <!--: 使用半徑方法移除外點-->
+    <param name="statistical_mean_k" value="30" />   <!--這個參數設定在統計學方法中使用的鄰居數目的最小值為 30。這表示每個點將與其最近的 30 個鄰居比較，用於計算平均值和標準差，以識別和移除統計上的離群值-->
+    <param name="statistical_stddev" value="1.2" />  <!--: 此參數設定用於判斷是否為離群點的標準差閾值。如果一個點的距離超過其鄰居平均距離的 1.2 倍標準差，則該點會被認為是離群點並將被移除。-->
+    <param name="radius_radius" value="0.5" />       <!--用於半徑外點過濾方法的搜索半徑為 0.5 米,檢查半徑為 0.5 米內的鄰居-->
+    <param name="radius_min_neighbors" value="5" />  <!--如果一個點在指定半徑內的鄰居少於 5 個，則認為它是外點-->
+  </node>
+  
+
+  <!-- scan_matching_odom_nodelet -->
+  <node pkg="nodelet" type="nodelet" name="scan_matching_odom_nodelet" args="load lidar_odometry/ScanMatchingOdomNodelet $(arg nodelet_manager)">
+      <param name="odom_frame_id" value="odom" /> 
+      <param name="calib_file" type="string" value="$(arg calib_file)" /> 
+      <param name="odom_file" type="string" value="$(arg odom_file)" />        
+  </node>
+  
+  <node pkg="aloam_velodyne" type="ascanRegistration" name="ascanRegistration" output="screen" />
+         <param name="scan_line" type="int" value="16" />
+         <!-- remove too closed points -->
+         <param name="minimum_range" type="double" value="0.3"/>
+
+    <node pkg="aloam_velodyne" type="alaserOdometry" name="alaserOdometry" output="screen" />
+        <!-- if 1, do mapping 10 Hz, if 2, do mapping 5 Hz. Suggest to use 1, it will adjust frequence automaticlly -->
+        <param name="mapping_skip_frame" type="int" value="1" />
+
+    <node pkg="aloam_velodyne" type="alaserMapping" name="alaserMapping" output="screen" />
+        <param name="mapping_line_resolution" type="double" value="0.2"/>
+        <param name="mapping_plane_resolution" type="double" value="0.4"/>
+   
+  
+     
+    <group if="$(arg rviz)">
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz1" args="-d $(find aloam_velodyne)/rviz_cfg/aloam_velodyne.rviz" />
+    </group>
+    
+
+    
+
+     <!--  save_map -->
+    <node name="savemap" pkg="aloam_velodyne" type="savemap" output="screen"> 
+	    <param name="calib_file" type="string" value="$(arg calib_file)" /> 
+    <param name="output_path" type="string" value="$(arg output_path)" />
+    </node>
+
+    
+
+  <!-- global_graph_nodelet -->
+  <node pkg="nodelet" type="nodelet" name="global_graph_nodelet" args="load slam/GlobalGraphNodelet $(arg nodelet_manager)">
+    <!-- io settings -->
+    <param name="calib_file" type="string" value="$(arg calib_file)" /> 
+    <!-- topic settings -->
+    <param name="odom_topic" type="string" value="/aft_mapped_to_init_high_frec" />    <!--A-LOAM出來的odom-->
+    <param name="img_topic" type="string" value="/kitti/camera_color_left/image_raw" />   <!--相機topic-->
+    <!-- frame settings -->
+    <param name="map_frame_id" value="map" />
+    <param name="odom_frame_id" value="odom" />
+    <!-- optimization params -->
+    <!-- typical solvers: gn_var, gn_fix6_3, gn_var_cholmod, lm_var, lm_fix6_3, lm_var_cholmod, ... -->
+    <param name="g2o_solver_type" value="lm_var_cholmod" />
+    <param name="g2o_solver_num_iterations" value="1024" />   <!-- 最大迭代次數為 1024 -->
+
+    <!-- keyframe registration params -->
+    <param name="enable_gps" value="$(arg enable_gps)" />
+    <param name="enable_imu_acceleration" value="$(arg enable_imu_acc)" />
+    <param name="enable_imu_orientation" value="$(arg enable_imu_ori)" />
+    <param name="keyframe_delta_trans" value="10.0" />     <!--若與pre keyframe 平移量小於此閾值,不加入keyframe_queue -->
+    <param name="keyframe_delta_angle" value="0.17" />      <!--若與pre keyframe 旋轉量小於此閾值(rad),不加入keyframe_queue --> 
+    <!-- loop closure params -->
+    <param name="distance_thresh" value="20.0" />             <!--若兩幀之實際距離小於此值,則認定為疑似閉合迴路幀-->
+    <param name="accum_distance_thresh" value="100.0" />      <!-- 前一關鍵幀與這關鍵幀之累積距離差要大此值-->
+    <param name="min_edge_interval" value="50.0" />          <!-- 兩個閉合回路的距離要大此值-->
+    <param name="fitness_score_thresh" value="2.0" />         <!-- 歐式距離得分,越低越好-->
+    <param name="voc_path" value="$(find slam)/config/vocab_larger.yml.gz" />
+
+   <!-- edge params -->
+    <!-- GPS -->
+    <param name="gps_edge_robust_kernel" value="Huber" />
+    <param name="gps_edge_robust_kernel_size" value="1.0" />
+    <param name="gps_edge_stddev_xy" value="20.0" />
+    <param name="gps_edge_stddev_z" value="5.0" />
+    <!-- IMU orientation -->
+    <param name="imu_orientation_edge_robust_kernel" value="Huber" />
+    <param name="imu_orientation_edge_stddev" value="1.0" />
+    <!-- IMU acceleration (gravity vector) -->
+    <param name="imu_acceleration_edge_robust_kernel" value="Huber" />
+    <param name="imu_acceleration_edge_stddev" value="1.0" />
+    <!-- ground plane -->
+    <param name="floor_edge_robust_kernel" value="Huber" />
+    <param name="floor_edge_stddev" value="100.0" />
+    <!-- robust kernels: NONE, Cauchy, DCS, Fair, GemanMcClure, Huber, PseudoHuber, Saturated, Tukey, Welsch -->
+    <param name="odometry_edge_robust_kernel" value="Huber" />
+    <param name="odometry_edge_robust_kernel_size" value="1.0" />
+    <param name="loop_closure_edge_robust_kernel" value="Huber" />
+    <param name="loop_closure_edge_robust_kernel_size" value="1.0" />
+    <param name="use_const_inf_matrix" value="true" />  
+    <param name="const_stddev_x" value="0.5" />
+    <param name="const_stddev_q" value="0.1" />
+    <param name="var_gain_a" value="20.0" />
+    <param name="min_stddev_x" value="0.1" />
+    <param name="max_stddev_x" value="5.0" />
+    <param name="min_stddev_q" value="0.05" />
+    <param name="max_stddev_q" value="0.2" />
+    <!-- update params -->
+    <param name="graph_update_interval" value="10.0" />          <!--SLAM 后端graph优化的时间间隔 wall time -->
+    <param name="max_keyframes_per_update" value="20" />        <!--限制每次keyframe_queue 更新的數量-->
+    <param name="map_cloud_update_interval" value="10.0" />     <!--多久更新mapping的時間-->
+    <param name="map_cloud_resolution" value="0.5" />          <!--地圖點雲的分辨率-->
+  </node>
+
+  <node pkg="slam" type="map2odom_publisher.py" name="map2odom_publisher" />
+  
+  <!-- -->
+  <group if="$(arg rviz)">
+    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz2" args="-d $(find slam)/rviz/global_graph.rviz" />
+  </group>
+  
+   
+  
+</launch>
